@@ -219,6 +219,7 @@
 //! For further explanation of the traits and how to implement them manually refer to
 //! [Pread](trait.Pread.html) and [TryFromCtx](ctx/trait.TryFromCtx.html).
 
+#![forbid(unsafe_code)]
 #![cfg_attr(not(feature = "std"), no_std)]
 
 #[cfg(feature = "derive")]
