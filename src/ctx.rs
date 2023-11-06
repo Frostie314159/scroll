@@ -189,7 +189,7 @@ use std::ffi::{CStr, CString};
 
 use crate::endian::Endian;
 use crate::error;
-use crate::Pread;
+use crate::{Pread, Pwrite};
 
 /// A trait for measuring how large something is; for a byte sequence, it will be its length.
 pub trait MeasureWith<Ctx> {
@@ -397,25 +397,24 @@ macro_rules! signed_to_unsigned {
 }
 
 macro_rules! write_into {
-    ($typ:ty, $size:expr, $n:expr, $dst:expr, $endian:expr) => {{
-        assert!($dst.len() >= $size);
+    ($typ:ty, $n:expr, $dst:expr, $endian:expr) => {{
+        assert!($dst.len() >= ::core::mem::size_of::<$typ>());
         let bytes = if $endian.is_little() {
             $n.to_le()
         } else {
             $n.to_be()
         }
         .to_ne_bytes();
-        $dst[..$size].copy_from_slice(bytes.as_slice());
+        $dst[..::core::mem::size_of::<$typ>()].copy_from_slice(bytes.as_slice());
     }};
 }
 
 macro_rules! into_ctx_impl {
-    ($typ:tt, $size:expr) => {
+    ($typ:tt) => {
         impl IntoCtx<Endian> for $typ {
             #[inline]
             fn into_ctx(self, dst: &mut [u8], le: Endian) {
-                assert!(dst.len() >= $size);
-                write_into!($typ, $size, self, dst, le);
+                write_into!($typ, self, dst, le);
             }
         }
         impl<'a> IntoCtx<Endian> for &'a $typ {
@@ -431,14 +430,15 @@ macro_rules! into_ctx_impl {
             type Error = error::Error;
             #[inline]
             fn try_into_ctx(self, dst: &mut [u8], le: Endian) -> error::Result<usize> {
-                if $size > dst.len() {
+                const SIZE: usize = ::core::mem::size_of::<$typ>();
+                if SIZE > dst.len() {
                     Err(error::Error::TooBig {
-                        size: $size,
+                        size: SIZE,
                         len: dst.len(),
                     })
                 } else {
                     <$typ as IntoCtx<Endian>>::into_ctx(self, dst, le);
-                    Ok($size)
+                    Ok(SIZE)
                 }
             }
         }
@@ -453,11 +453,11 @@ macro_rules! into_ctx_impl {
 }
 
 macro_rules! from_ctx_impl {
-    ($typ:tt, $size:expr) => {
+    ($typ:tt) => {
         impl<'a> FromCtx<Endian> for $typ {
             #[inline]
             fn from_ctx(src: &[u8], le: Endian) -> Self {
-                assert!(src.len() >= $size);
+                assert!(src.len() >= ::core::mem::size_of::<$typ>());
                 let data = <signed_to_unsigned!($typ)>::from_ne_bytes(src.pread(0).unwrap());
                 (if le.is_little() {
                     data.to_le()
@@ -477,14 +477,15 @@ macro_rules! from_ctx_impl {
                 src: &'a [u8],
                 le: Endian,
             ) -> result::Result<(Self, usize), Self::Error> {
-                if $size > src.len() {
-                    Err(error::Error::TooBig {
-                        size: $size,
-                        len: src.len(),
-                    })
-                } else {
-                    Ok((FromCtx::from_ctx(&src, le), $size))
-                }
+                let data = <$typ>::from_ne_bytes(src.pread(0)?);
+                Ok((
+                    if le.is_little() {
+                        data.to_le()
+                    } else {
+                        data.to_be()
+                    },
+                    ::core::mem::size_of::<$typ>(),
+                ))
             }
         }
         // as ref
@@ -495,7 +496,7 @@ macro_rules! from_ctx_impl {
             #[inline]
             fn from_ctx(src: &T, le: Endian) -> Self {
                 let src = src.as_ref();
-                assert!(src.len() >= $size);
+                assert!(src.len() >= ::core::mem::size_of::<$typ>());
                 let data = <signed_to_unsigned!($typ)>::from_ne_bytes(src.pread(0).unwrap());
                 (if le.is_little() {
                     data.to_le()
@@ -521,24 +522,24 @@ macro_rules! from_ctx_impl {
 }
 
 macro_rules! ctx_impl {
-    ($typ:tt, $size:expr) => {
-        from_ctx_impl!($typ, $size);
+    ($typ:tt) => {
+        from_ctx_impl!($typ);
     };
 }
 
-ctx_impl!(u8, 1);
-ctx_impl!(i8, 1);
-ctx_impl!(u16, 2);
-ctx_impl!(i16, 2);
-ctx_impl!(u32, 4);
-ctx_impl!(i32, 4);
-ctx_impl!(u64, 8);
-ctx_impl!(i64, 8);
-ctx_impl!(u128, 16);
-ctx_impl!(i128, 16);
+ctx_impl!(u8);
+ctx_impl!(i8);
+ctx_impl!(u16);
+ctx_impl!(i16);
+ctx_impl!(u32);
+ctx_impl!(i32);
+ctx_impl!(u64);
+ctx_impl!(i64);
+ctx_impl!(u128);
+ctx_impl!(i128);
 
 macro_rules! from_ctx_float_impl {
-    ($typ:tt, $size:expr) => {
+    ($typ:tt) => {
         impl<'a> FromCtx<Endian> for $typ {
             #[inline]
             fn from_ctx(src: &[u8], le: Endian) -> Self {
@@ -555,40 +556,35 @@ macro_rules! from_ctx_float_impl {
                 src: &'a [u8],
                 le: Endian,
             ) -> result::Result<(Self, usize), Self::Error> {
-                if $size > src.len() {
-                    Err(error::Error::TooBig {
-                        size: $size,
-                        len: src.len(),
-                    })
-                } else {
-                    Ok((FromCtx::from_ctx(src, le), $size))
-                }
+                Ok((
+                    <$typ>::from_bits(src.pread_with(0, le)?),
+                    ::core::mem::size_of::<$typ>(),
+                ))
             }
         }
     };
 }
 
-from_ctx_float_impl!(f32, 4);
-from_ctx_float_impl!(f64, 8);
+from_ctx_float_impl!(f32);
+from_ctx_float_impl!(f64);
 
-into_ctx_impl!(u8, 1);
-into_ctx_impl!(i8, 1);
-into_ctx_impl!(u16, 2);
-into_ctx_impl!(i16, 2);
-into_ctx_impl!(u32, 4);
-into_ctx_impl!(i32, 4);
-into_ctx_impl!(u64, 8);
-into_ctx_impl!(i64, 8);
-into_ctx_impl!(u128, 16);
-into_ctx_impl!(i128, 16);
+into_ctx_impl!(u8);
+into_ctx_impl!(i8);
+into_ctx_impl!(u16);
+into_ctx_impl!(i16);
+into_ctx_impl!(u32);
+into_ctx_impl!(i32);
+into_ctx_impl!(u64);
+into_ctx_impl!(i64);
+into_ctx_impl!(u128);
+into_ctx_impl!(i128);
 
 macro_rules! into_ctx_float_impl {
-    ($typ:tt, $size:expr) => {
+    ($typ:tt) => {
         impl IntoCtx<Endian> for $typ {
             #[inline]
             fn into_ctx(self, dst: &mut [u8], le: Endian) {
-                assert!(dst.len() >= $size);
-                write_into!(signed_to_unsigned!($typ), $size, self.to_bits(), dst, le);
+                write_into!(signed_to_unsigned!($typ), self.to_bits(), dst, le);
             }
         }
         impl<'a> IntoCtx<Endian> for &'a $typ {
@@ -604,15 +600,7 @@ macro_rules! into_ctx_float_impl {
             type Error = error::Error;
             #[inline]
             fn try_into_ctx(self, dst: &mut [u8], le: Endian) -> error::Result<usize> {
-                if $size > dst.len() {
-                    Err(error::Error::TooBig {
-                        size: $size,
-                        len: dst.len(),
-                    })
-                } else {
-                    <$typ as IntoCtx<Endian>>::into_ctx(self, dst, le);
-                    Ok($size)
-                }
+                dst.pwrite_with(self.to_bits(), 0, le)
             }
         }
         impl<'a> TryIntoCtx<Endian> for &'a $typ {
@@ -625,8 +613,8 @@ macro_rules! into_ctx_float_impl {
     };
 }
 
-into_ctx_float_impl!(f32, 4);
-into_ctx_float_impl!(f64, 8);
+into_ctx_float_impl!(f32);
+into_ctx_float_impl!(f64);
 
 impl<'a> TryFromCtx<'a, StrCtx> for &'a str {
     type Error = error::Error;
@@ -688,15 +676,13 @@ impl<'a> TryIntoCtx for &'a [u8] {
         // if src_len < 0 || dst_len < 0 || offset < 0 {
         //     return Err(error::Error::BadOffset(format!("requested operation has negative casts: src len: {} dst len: {} offset: {}", src_len, dst_len, offset)).into())
         // }
-        if src_len > dst_len {
-            Err(error::Error::TooBig {
+        dst.get_mut(..src_len)
+            .ok_or(error::Error::TooBig {
                 size: src_len,
                 len: dst_len,
-            })
-        } else {
-            dst[..src_len].copy_from_slice(self);
-            Ok(self.len())
-        }
+            })?
+            .copy_from_slice(self);
+        Ok(self.len())
     }
 }
 
@@ -755,6 +741,7 @@ impl<'a> TryFromCtx<'a> for &'a CStr {
     type Error = error::Error;
     #[inline]
     fn try_from_ctx(src: &'a [u8], _ctx: ()) -> result::Result<(Self, usize), Self::Error> {
+        // TODO: Replace with [CStr::from_bytes_until_nul] in the future.
         let nul_byte_index = src
             .iter()
             .position(|b| *b == 0x0)
