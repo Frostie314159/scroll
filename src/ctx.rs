@@ -790,7 +790,7 @@ impl<'a> TryFromCtx<'a> for &'a CStr {
             msg: "The input doesn't contain a null byte",
         })?;
         // Unwrap will be optimised away, since we asserted the length previously.
-        let cstr = CStr::from_bytes_with_nul(&src[..nul_byte_index]).unwrap();
+        let cstr = CStr::from_bytes_with_nul(&src[..=nul_byte_index]).unwrap();
         Ok((cstr, cstr.to_bytes_with_nul().len()))
     }
 }
