@@ -181,7 +181,6 @@
 //! ```
 
 use core::mem::size_of;
-use core::ptr::copy_nonoverlapping;
 use core::result;
 use core::str;
 
@@ -399,16 +398,14 @@ macro_rules! signed_to_unsigned {
 
 macro_rules! write_into {
     ($typ:ty, $size:expr, $n:expr, $dst:expr, $endian:expr) => {{
-        unsafe {
-            assert!($dst.len() >= $size);
-            let bytes = if $endian.is_little() {
-                $n.to_le()
-            } else {
-                $n.to_be()
-            }
-            .to_ne_bytes();
-            copy_nonoverlapping((&bytes).as_ptr(), $dst.as_mut_ptr(), $size);
+        assert!($dst.len() >= $size);
+        let bytes = if $endian.is_little() {
+            $n.to_le()
+        } else {
+            $n.to_be()
         }
+        .to_ne_bytes();
+        $dst[..$size].copy_from_slice(bytes.as_slice());
     }};
 }
 
@@ -461,14 +458,7 @@ macro_rules! from_ctx_impl {
             #[inline]
             fn from_ctx(src: &[u8], le: Endian) -> Self {
                 assert!(src.len() >= $size);
-                let mut data: signed_to_unsigned!($typ) = 0;
-                unsafe {
-                    copy_nonoverlapping(
-                        src.as_ptr(),
-                        &mut data as *mut signed_to_unsigned!($typ) as *mut u8,
-                        $size,
-                    );
-                }
+                let data = <signed_to_unsigned!($typ)>::from_ne_bytes(src.pread(0).unwrap());
                 (if le.is_little() {
                     data.to_le()
                 } else {
@@ -506,14 +496,7 @@ macro_rules! from_ctx_impl {
             fn from_ctx(src: &T, le: Endian) -> Self {
                 let src = src.as_ref();
                 assert!(src.len() >= $size);
-                let mut data: signed_to_unsigned!($typ) = 0;
-                unsafe {
-                    copy_nonoverlapping(
-                        src.as_ptr(),
-                        &mut data as *mut signed_to_unsigned!($typ) as *mut u8,
-                        $size,
-                    );
-                }
+                let data = <signed_to_unsigned!($typ)>::from_ne_bytes(src.pread(0).unwrap());
                 (if le.is_little() {
                     data.to_le()
                 } else {
@@ -559,20 +542,7 @@ macro_rules! from_ctx_float_impl {
         impl<'a> FromCtx<Endian> for $typ {
             #[inline]
             fn from_ctx(src: &[u8], le: Endian) -> Self {
-                assert!(src.len() >= ::core::mem::size_of::<Self>());
-                let mut data: signed_to_unsigned!($typ) = 0;
-                unsafe {
-                    copy_nonoverlapping(
-                        src.as_ptr(),
-                        &mut data as *mut signed_to_unsigned!($typ) as *mut u8,
-                        $size,
-                    );
-                    $typ::from_bits(if le.is_little() {
-                        data.to_le()
-                    } else {
-                        data.to_be()
-                    })
-                }
+                $typ::from_bits(src.pread_with(0, le).unwrap())
             }
         }
         impl<'a> TryFromCtx<'a, Endian> for $typ
@@ -713,18 +683,18 @@ impl<'a> TryIntoCtx for &'a [u8] {
     type Error = error::Error;
     #[inline]
     fn try_into_ctx(self, dst: &mut [u8], _ctx: ()) -> error::Result<usize> {
-        let src_len = self.len() as isize;
-        let dst_len = dst.len() as isize;
+        let src_len = self.len();
+        let dst_len = dst.len();
         // if src_len < 0 || dst_len < 0 || offset < 0 {
         //     return Err(error::Error::BadOffset(format!("requested operation has negative casts: src len: {} dst len: {} offset: {}", src_len, dst_len, offset)).into())
         // }
         if src_len > dst_len {
             Err(error::Error::TooBig {
-                size: self.len(),
-                len: dst.len(),
+                size: src_len,
+                len: dst_len,
             })
         } else {
-            unsafe { copy_nonoverlapping(self.as_ptr(), dst.as_mut_ptr(), src_len as usize) };
+            dst[..src_len].copy_from_slice(self);
             Ok(self.len())
         }
     }
@@ -785,10 +755,13 @@ impl<'a> TryFromCtx<'a> for &'a CStr {
     type Error = error::Error;
     #[inline]
     fn try_from_ctx(src: &'a [u8], _ctx: ()) -> result::Result<(Self, usize), Self::Error> {
-        let nul_byte_index = src.iter().position(|b| *b == 0x0).ok_or(error::Error::BadInput {
-            size: 0,
-            msg: "The input doesn't contain a null byte",
-        })?;
+        let nul_byte_index = src
+            .iter()
+            .position(|b| *b == 0x0)
+            .ok_or(error::Error::BadInput {
+                size: 0,
+                msg: "The input doesn't contain a null byte",
+            })?;
         // Unwrap will be optimised away, since we asserted the length previously.
         let cstr = CStr::from_bytes_with_nul(&src[..=nul_byte_index]).unwrap();
         Ok((cstr, cstr.to_bytes_with_nul().len()))
@@ -818,9 +791,7 @@ impl<'a> TryIntoCtx for &'a CStr {
                 len: data.len(),
             })
         } else {
-            unsafe {
-                copy_nonoverlapping(data.as_ptr(), dst.as_mut_ptr(), data.len());
-            }
+            dst[..data.len()].copy_from_slice(data);
 
             Ok(data.len())
         }
