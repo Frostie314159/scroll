@@ -796,18 +796,13 @@ impl<'a> TryFromCtx<'a> for &'a CStr {
     type Error = error::Error;
     #[inline]
     fn try_from_ctx(src: &'a [u8], _ctx: ()) -> result::Result<(Self, usize), Self::Error> {
-        let null_byte = match src.iter().position(|b| *b == 0) {
-            Some(ix) => ix,
-            None => {
-                return Err(error::Error::BadInput {
-                    size: 0,
-                    msg: "The input doesn't contain a null byte",
-                })
-            }
-        };
-
-        let cstr = unsafe { CStr::from_bytes_with_nul_unchecked(&src[..=null_byte]) };
-        Ok((cstr, null_byte + 1))
+        let nul_byte_index = src.iter().position(|b| *b == 0x0).ok_or(error::Error::BadInput {
+            size: 0,
+            msg: "The input doesn't contain a null byte",
+        })?;
+        // Unwrap will be optimised away, since we asserted the length previously.
+        let cstr = CStr::from_bytes_with_nul(&src[..nul_byte_index]).unwrap();
+        Ok((cstr, cstr.to_bytes_with_nul().len()))
     }
 }
 
